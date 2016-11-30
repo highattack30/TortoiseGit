@@ -31,7 +31,6 @@ public:
 	void SetUnselectedRebaseAction(int action);
 
 protected:
-	int	 CherryPickFrom(CString from, CString to);
 	int  RevertSelectedCommits(int parent);
 	int	DeleteRef(const CString& ref);
 	void CloseHandles();

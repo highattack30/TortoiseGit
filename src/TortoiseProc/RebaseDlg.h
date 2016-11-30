@@ -204,7 +204,6 @@ protected:
 	CProgressCtrl		m_ProgressBar;
 	CStatic				m_CtrlStatusText;
 
-	BOOL				m_bForce;
 	BOOL				m_bAddCherryPickedFrom;
 	BOOL				m_bAutoSkipFailedCommit;
 	bool				m_bRebaseAutoEnd;
@@ -220,6 +219,10 @@ public:
 	BOOL				m_IsCherryPick;
 	bool				m_bRebaseAutoStart;
 	BOOL				m_bPreserveMerges;
+
+	BOOL				m_bForce;
+	CGitHashList		m_wantSquashList; // used only for GitLogList Combine Commits, also activates "Add/Edit commit" checkbox
+
 protected:
 	CSplitterControl	m_wndSplitter;
 	CMFCTabCtrl			m_ctrlTabCtrl;

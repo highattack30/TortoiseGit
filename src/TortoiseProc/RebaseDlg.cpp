@@ -729,6 +729,17 @@ void CRebaseDlg::FetchLogList()
 			m_CommitList.m_logEntries.GetGitRevAt(itIx->second).GetRebaseAction() = CGitLogListBase::LOGACTIONS_REBASE_SKIP;
 			bHasSKip = true;
 		});
+
+		if (!m_wantSquashList.empty())
+		{
+			for (const auto& hash : m_wantSquashList)
+			{
+				auto itIx = revIxMap.find(CGitHash(hash));
+				if (itIx == revIxMap.end())
+					continue; // Not found?? Should not occur...
+				m_CommitList.m_logEntries.GetGitRevAt(itIx->second).GetRebaseAction() = CGitLogListBase::LOGACTIONS_REBASE_SQUASH;
+			}
+		}
 	}
 	m_CommitList.Invalidate();
 	if (bHasSKip)

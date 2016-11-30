@@ -107,43 +107,6 @@ int CGitLogList::RevertSelectedCommits(int parent)
 	}
 	return ret;
 }
-int CGitLogList::CherryPickFrom(CString from, CString to)
-{
-	CLogDataVector logs(&m_LogCache);
-	CString range;
-	range.Format(L"%s..%s", (LPCTSTR)from, (LPCTSTR)to);
-	if (logs.ParserFromLog(nullptr, 0, 0, &range))
-		return -1;
-
-	if (logs.empty())
-		return 0;
-
-	CSysProgressDlg progress;
-	progress.SetTitle(CString(MAKEINTRESOURCE(IDS_PROGS_TITLE_CHERRYPICK)));
-	progress.SetAnimation(IDR_MOVEANI);
-	progress.SetTime(true);
-	progress.ShowModeless(this);
-
-	CBlockCacheForPath cacheBlock(g_Git.m_CurrentDir);
-
-	for (int i = (int)logs.size() - 1; i >= 0; i--)
-	{
-		if (progress.IsVisible())
-		{
-			progress.FormatNonPathLine(1, IDS_PROC_PICK, logs.GetGitRevAt(i).m_CommitHash.ToString());
-			progress.FormatNonPathLine(2, L"%s", (LPCTSTR)logs.GetGitRevAt(i).GetSubject());
-			progress.SetProgress64(logs.size() - i, logs.size());
-		}
-		if (progress.HasUserCancelled())
-			throw std::exception(CUnicodeUtils::GetUTF8(CString(MAKEINTRESOURCE(IDS_USERCANCELLED))));
-		CString cmd,out;
-		cmd.Format(L"git.exe cherry-pick %s", (LPCTSTR)logs.GetGitRevAt(i).m_CommitHash.ToString());
-		if(g_Git.Run(cmd,&out,CP_UTF8))
-			throw std::exception(CUnicodeUtils::GetUTF8(CString(MAKEINTRESOURCE(IDS_PROC_CHERRYPICKFAILED)) + L":\r\n\r\n" + out));
-	}
-
-	return 0;
-}
 
 int CGitLogList::DeleteRef(const CString& ref)
 {
@@ -570,13 +533,12 @@ void CGitLogList::ContextMenuAction(int cmd,int FirstSelect, int LastSelect, CMe
 			break;
 		case ID_COMBINE_COMMIT:
 		{
-			CString head;
-			CGitHash headhash;
-			CGitHash hashFirst,hashLast;
+			CGitHash hashFirst, hashLast, rebaseOnto;
 
 			int headindex=GetHeadIndex();
 			if(headindex>=0) //incase show all branch, head is not the first commits.
 			{
+				CString head;
 				head.Format(L"HEAD~%d", FirstSelect - headindex);
 				if (g_Git.GetHash(hashFirst, head))
 				{
@@ -590,139 +552,41 @@ void CGitLogList::ContextMenuAction(int cmd,int FirstSelect, int LastSelect, CMe
 					MessageBox(g_Git.GetGitLastErr(L"Could not get hash of last selected revision."), L"TortoiseGit", MB_ICONERROR);
 					break;
 				}
+				head.Format(L"HEAD~%d", LastSelect + 1 - headindex);
+				if (g_Git.GetHash(rebaseOnto, head))
+				{
+					MessageBox(g_Git.GetGitLastErr(L"Could not get hash of precedessor of last selected revision."), L"TortoiseGit", MB_ICONERROR);
+					break;
+				}
 			}
 
 			GitRev* pFirstEntry = m_arShownList.SafeGetAt(FirstSelect);
 			GitRev* pLastEntry = m_arShownList.SafeGetAt(LastSelect);
-			if(pFirstEntry->m_CommitHash != hashFirst || pLastEntry->m_CommitHash != hashLast)
+			if (pFirstEntry->m_CommitHash != hashFirst || pLastEntry->m_CommitHash != hashLast || hashFirst.IsEmpty() || hashLast.IsEmpty() || rebaseOnto.IsEmpty())
 			{
 				CMessageBox::Show(GetSafeOwner()->GetSafeHwnd(), IDS_PROC_CANNOTCOMBINE, IDS_APPNAME, MB_OK | MB_ICONEXCLAMATION);
 				break;
 			}
 
-			GitRev lastRevision;
-			if (lastRevision.GetParentFromHash(hashLast))
+			if (m_bThreadRunning)
 			{
-				MessageBox(lastRevision.GetLastErr(), L"TortoiseGit", MB_ICONERROR);
+				CMessageBox::Show(GetSafeOwner()->GetSafeHwnd(), IDS_PROC_LOG_ONLYONCE, IDS_APPNAME, MB_ICONEXCLAMATION);
 				break;
 			}
+			CRebaseDlg dlg;
+			dlg.m_Upstream = rebaseOnto.ToString();
+			dlg.m_bForce = true;
+			dlg.m_bRebaseAutoStart = true;
+			POSITION pos2 = GetFirstSelectedItemPosition();
+			while (pos2)
+				dlg.m_wantSquashList.push_back(m_arShownList.SafeGetAt(GetNextSelectedItem(pos2))->m_CommitHash);
+			dlg.m_wantSquashList.pop_back(); // drop the first selected commit, this is the one we want to squash into
 
-			if (g_Git.GetHash(headhash, L"HEAD"))
-			{
-				MessageBox(g_Git.GetGitLastErr(L"Could not get HEAD hash."), L"TortoiseGit", MB_ICONERROR);
-				break;
-			}
+			if (dlg.DoModal() == IDOK)
+				Refresh();
 
-			if(!g_Git.CheckCleanWorkTree())
-			{
-				CMessageBox::Show(GetSafeOwner()->GetSafeHwnd(), IDS_PROC_NOCLEAN, IDS_APPNAME, MB_OK | MB_ICONEXCLAMATION);
-				break;
-			}
-			CString sCmd, out;
-
-			//Use throw to abort this process (reset back to original HEAD)
-			try
-			{
-				sCmd.Format(L"git.exe reset --hard %s --", (LPCTSTR)pFirstEntry->m_CommitHash.ToString());
-				if(g_Git.Run(sCmd, &out, CP_UTF8))
-				{
-					MessageBox(out, L"TortoiseGit", MB_OK | MB_ICONERROR);
-					throw std::exception(CUnicodeUtils::GetUTF8(CString(MAKEINTRESOURCE(IDS_PROC_COMBINE_ERRORSTEP1)) + L"\r\n\r\n" + out));
-				}
-				sCmd.Format(L"git.exe reset --mixed %s --", (LPCTSTR)hashLast.ToString());
-				if(g_Git.Run(sCmd, &out, CP_UTF8))
-				{
-					MessageBox(out, L"TortoiseGit", MB_OK | MB_ICONERROR);
-					throw std::exception(CUnicodeUtils::GetUTF8(CString(MAKEINTRESOURCE(IDS_PROC_COMBINE_ERRORSTEP2)) + L"\r\n\r\n"+out));
-				}
-
-				CTGitPathList PathList;
-				/* don't why must add --stat to get action status*/
-				/* first -z will be omitted by gitdll*/
-				if(g_Git.GetDiffPath(&PathList,&pFirstEntry->m_CommitHash,&hashLast,"-z --stat -r"))
-				{
-					MessageBox(L"Get Diff file list error", L"TortoiseGit", MB_OK | MB_ICONERROR);
-					throw std::exception(CUnicodeUtils::GetUTF8(L"Could not get changed file list aborting...\r\n\r\n"+out));
-				}
-
-				for (int i = 0; i < PathList.GetCount(); ++i)
-				{
-					if(PathList[i].m_Action & CTGitPath::LOGACTIONS_ADDED)
-					{
-						sCmd.Format(L"git.exe add -- \"%s\"", (LPCTSTR)PathList[i].GetGitPathString());
-						if (g_Git.Run(sCmd, &out, CP_UTF8))
-						{
-							MessageBox(out, L"TortoiseGit", MB_OK | MB_ICONERROR);
-							throw std::exception(CUnicodeUtils::GetUTF8(L"Could not add new file aborting...\r\n\r\n"+out));
-						}
-					}
-					if(PathList[i].m_Action & CTGitPath::LOGACTIONS_DELETED)
-					{
-						sCmd.Format(L"git.exe rm -- \"%s\"", (LPCTSTR)PathList[i].GetGitPathString());
-						if (g_Git.Run(sCmd, &out, CP_UTF8))
-						{
-							MessageBox(out, L"TortoiseGit", MB_OK | MB_ICONERROR);
-							throw std::exception(CUnicodeUtils::GetUTF8(L"Could not rm file aborting...\r\n\r\n"+out));
-						}
-					}
-				}
-
-				CCommitDlg dlg;
-				for (int i = FirstSelect; i <= LastSelect; ++i)
-				{
-					GitRev* pRev = m_arShownList.SafeGetAt(i);
-					dlg.m_sLogMessage += pRev->GetSubject() + L'\n' + pRev->GetBody();
-					dlg.m_sLogMessage += L'\n';
-				}
-				dlg.m_bWholeProject=true;
-				dlg.m_bSelectFilesForCommit = true;
-				dlg.m_bForceCommitAmend=true;
-				int squashDate = (int)CRegDWORD(L"Software\\TortoiseGit\\SquashDate", 0);
-				if (squashDate == 1)
-					dlg.SetTime(m_arShownList.SafeGetAt(FirstSelect)->GetAuthorDate());
-				else if (squashDate == 2)
-					dlg.SetTime(CTime::GetCurrentTime());
-				else
-					dlg.SetTime(m_arShownList.SafeGetAt(LastSelect)->GetAuthorDate());
-				CTGitPathList gpl;
-				gpl.AddPath(CTGitPath(g_Git.m_CurrentDir));
-				dlg.m_pathList = gpl;
-				if (lastRevision.ParentsCount() != 1)
-				{
-					MessageBox(L"The following commit dialog can only show changes of oldest commit if it has exactly one parent. This is not the case right now.", L"TortoiseGit", MB_OK | MB_ICONINFORMATION);
-					dlg.m_bAmendDiffToLastCommit = TRUE;
-				}
-				else
-					dlg.m_bAmendDiffToLastCommit = FALSE;
-				dlg.m_bNoPostActions=true;
-				dlg.m_AmendStr=dlg.m_sLogMessage;
-
-				if (dlg.DoModal() == IDOK)
-				{
-					if(pFirstEntry->m_CommitHash!=headhash)
-					{
-						if(CherryPickFrom(pFirstEntry->m_CommitHash.ToString(),headhash))
-						{
-							CString msg;
-							msg.Format(L"Error while cherry pick commits on top of combined commits. Aborting.\r\n\r\n");
-							throw std::exception(CUnicodeUtils::GetUTF8(msg));
-						}
-					}
-				}
-				else
-					throw std::exception(CUnicodeUtils::GetUTF8(CString(MAKEINTRESOURCE(IDS_USERCANCELLED))));
-			}
-			catch(std::exception& e)
-			{
-				CMessageBox::Show(GetSafeOwner()->GetSafeHwnd(), CUnicodeUtils::GetUnicode(CStringA(e.what())), L"TortoiseGit", MB_OK | MB_ICONERROR);
-				sCmd.Format(L"git.exe reset --hard %s --", (LPCTSTR)headhash.ToString());
-				out.Empty();
-				if(g_Git.Run(sCmd, &out, CP_UTF8))
-					MessageBox(CString(MAKEINTRESOURCE(IDS_PROC_COMBINE_ERRORRESETHEAD)) + L"\r\n\r\n" + out, L"TortoiseGit", MB_OK | MB_ICONERROR);
-			}
-			Refresh();
-		}
 			break;
+		}
 
 		case ID_CHERRY_PICK:
 			{
